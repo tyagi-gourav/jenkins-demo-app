@@ -1,0 +1,47 @@
+pipeline {
+    agent any
+    options { timestamps() }
+    environment {
+        IMAGE = "demo-app:${BUILD_NUMBER}"
+    }
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+        stage('Unit Tests') {
+            steps {
+                sh '''
+                    python3 -m venv .venv
+                    . .venv/bin/activate
+                    pip install -r requirements.txt
+                    pytest -q
+                '''
+            }
+        }
+        stage('Secret Scan') {
+            steps {
+                sh 'docker run --rm --volumes-from jenkins -w "$PWD" zricethezav/gitleaks:latest detect --source=. --no-git'
+            }
+        }
+        stage('Build Image') {
+            steps { sh 'docker build -t $IMAGE .' }
+        }
+        stage('Image Scan') {
+            steps {
+                sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 $IMAGE'
+            }
+        }
+        stage('Deploy to Dev') {
+            steps {
+                sh '''
+                    docker rm -f demo-app-dev || true
+                    docker run -d --name demo-app-dev -p 5050:5000 $IMAGE
+                '''
+            }
+        }
+    }
+    post {
+        success { echo 'Deployed. Check http://localhost:5050/health' }
+        failure { echo 'Build failed. Check the stage that turned red.' }
+    }
+}
